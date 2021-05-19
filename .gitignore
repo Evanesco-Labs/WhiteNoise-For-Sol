@@ -1,0 +1,7 @@
+lib
+target
+.rust
+log
+.vscode
+db
+.idea/
