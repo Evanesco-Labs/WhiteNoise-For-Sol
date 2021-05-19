@@ -1,0 +1,20 @@
+syntax = "proto3";
+package gossip_proto;
+
+message negotiate {
+  string join = 1; //join at this peerid
+  string sessionId = 2;
+  string destination = 3;
+  bytes sig = 4;
+}
+
+message EncryptedNeg {
+  string des = 1;
+  bytes cypher = 2;
+}
+
+//message detail {
+//  string join = 1;
+//  string sessionId = 2;
+//  bytes sig = 3;
+//}
