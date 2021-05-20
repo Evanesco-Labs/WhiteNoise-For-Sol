@@ -59,7 +59,8 @@ pub struct RelayHandler {
 
 #[derive(Debug)]
 pub enum RelayHandlerEvent {
-    Relay(NegotiatedSubstream),
+    InboundRelay(NegotiatedSubstream),
+    OutBoundRelay(NegotiatedSubstream),
     Dial(PeerId)
 }
 
@@ -128,11 +129,11 @@ impl ProtocolsHandler for RelayHandler {
         log::debug!("ProtocolsHandler::poll begins...");
         if  self.inbound.len()>0{
             let stream_s = self.inbound.remove(0);
-            return Poll::Ready(ProtocolsHandlerEvent::Custom( RelayHandlerEvent::Relay(stream_s)));
+            return Poll::Ready(ProtocolsHandlerEvent::Custom( RelayHandlerEvent::InboundRelay(stream_s)));
         }
         if self.outbound.len()>0{
             let stream_s = self.outbound.remove(0);
-            return Poll::Ready(ProtocolsHandlerEvent::Custom( RelayHandlerEvent::Relay(stream_s)));
+            return Poll::Ready(ProtocolsHandlerEvent::Custom( RelayHandlerEvent::OutBoundRelay(stream_s)));
         }
         if self.events.pop_front().is_some(){
             return Poll::Ready(ProtocolsHandlerEvent::OutboundSubstreamRequest{

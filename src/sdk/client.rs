@@ -13,7 +13,7 @@ use libp2p::swarm::NegotiatedSubstream;
 use std::collections::HashMap;
 use multihash::Code;
 use bytes::BufMut;
-use std::ops::DerefMut;
+use std::ops::{DerefMut, Deref};
 use crate::account::account_service::Account;
 use async_trait::async_trait;
 use log::info;
@@ -33,24 +33,19 @@ pub trait SolanaClient {
     async fn dial(&mut self, remote_id: String) -> String;
     //Send message to a circuit of session_id.
     async fn send_message(&self, session_id: &str, data: &[u8]);
-    //Get whitenoise_id of local client.
+
     fn get_whitenoise_id(&self) -> String;
 }
 
 #[derive(Clone)]
-pub struct SecureConn {
-    session_id: String,
-    stream: std::sync::Arc<std::sync::Mutex<NegotiatedSubstream>>,
-    noise: std::sync::Arc<std::sync::Mutex<TransportState>>,
-}
-
 pub struct WhiteNoiseClient {
     node: Node,
     new_client_timeout: Duration,
     bootstrap_addr: Multiaddr,
     bootstrap_peer_id: PeerId,
+    pub circuit_events: std::sync::Arc<std::sync::RwLock<std::collections::VecDeque<String>>>,
     sender_map: std::sync::Arc<std::sync::RwLock<HashMap<String, UnboundedSender<Vec<u8>>>>>,
-    receiver_map: std::sync::Arc<std::sync::RwLock<HashMap<String, UnboundedReceiver<Vec<u8>>>>>,
+    pub receiver_map: std::sync::Arc<std::sync::RwLock<HashMap<String, UnboundedReceiver<Vec<u8>>>>>,
 }
 
 impl WhiteNoiseClient {
@@ -68,6 +63,7 @@ impl WhiteNoiseClient {
             new_client_timeout: Duration::from_secs(100),
             bootstrap_addr,
             bootstrap_peer_id,
+            circuit_events: std::sync::Arc::new(std::sync::RwLock::new(std::collections::VecDeque::new())),
             sender_map: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
             receiver_map: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
         }
@@ -92,10 +88,12 @@ impl SolanaClient for WhiteNoiseClient {
         }
         let mut node = self.node.clone();
         let receive_map = self.receiver_map.clone();
+        let send_map = self.sender_map.clone();
+        let circuit_events = self.circuit_events.clone();
         //start answering dials
         tokio::spawn(async move {
             loop {
-                let mut stream = node.wait_for_relay_stream().await;
+                let mut stream = node.wait_for_inbound_relay_stream().await;
                 info!("received relay steam");
                 let relay = loop {
                     let relay_inner = node::read_from_negotiated(&mut stream).await;
@@ -164,19 +162,41 @@ impl SolanaClient for WhiteNoiseClient {
 
                 let mut noise = noise.into_transport_mode().unwrap();
 
-                let (mut sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-                receive_map.write().unwrap().insert(session_id.to_string().clone(), receiver);
+                //init read from this stream
+                let (mut receive_map_sender, mut receive_map_receiver) = tokio::sync::mpsc::unbounded_channel();
+                receive_map.write().unwrap().insert(session_id.to_string().clone(), receive_map_receiver);
 
+                //init write from this stream
+                let (mut send_map_sender, mut send_map_receiver) = tokio::sync::mpsc::unbounded_channel();
+                send_map.write().unwrap().insert(session_id.to_string().clone(), send_map_sender);
+
+                let session_id_clone = session_id.clone();
                 tokio::spawn(async move {
                     let mut buf = [0u8; 65536];
                     loop {
-                        let len = node::read_and_decrypt_payload(&mut stream, &mut noise, &mut buf).await;
-                        let real_size = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-                        info!("real size:{},buf len:{}", real_size, len);
-                        let b2 = &buf[4..(real_size + 4)];
-                        sender.send(Vec::from(b2));
+                        tokio::select! {
+                            len = node::read_and_decrypt_payload(&mut stream, &mut noise, &mut buf) => {
+                            let real_size = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                            info!("real size:{},buf len:{}", real_size, len);
+                            let b2 = &buf[4..(real_size + 4)];
+                            println!("receive chatmessage:{}",String::from_utf8_lossy(b2));
+                            // receive_map_sender.send(Vec::from(b2));
+                        }
+                        Some(data) = send_map_receiver.recv() => {
+                            let mut buf = [0u8; 65536];
+                            let mut payload = Vec::new();
+                            payload.put_u32(data.len() as u32);
+                            payload.extend_from_slice(data.as_slice());
+                            let len = noise.write_message(payload.as_slice(), &mut buf).unwrap();
+                            let buf_tmp = &buf[..len];
+                            write_payload(&mut stream, buf_tmp, len, &session_id_clone).await;
+                        }
+                    }
                     }
                 });
+
+                let mut guard = circuit_events.write().unwrap();
+                (*guard).push_back(session_id.to_string().clone());
             }
         });
         ok
@@ -205,7 +225,7 @@ impl SolanaClient for WhiteNoiseClient {
             return "".to_string();
         }
 
-        let mut stream = self.node.wait_for_relay_stream().await;
+        let mut stream = self.node.wait_for_outbound_relay_stream().await;
         info!("received relay steam");
 
         node::write_relay_wake(&mut stream).await;
@@ -265,22 +285,44 @@ impl SolanaClient for WhiteNoiseClient {
         node::write_handshake_payload(&mut stream, &buf[..len], len, &session_id).await;
         let mut noise = noise.into_transport_mode().unwrap();
 
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.sender_map.write().unwrap().insert(session_id.clone(), sender);
+        //init read from this stream
+        let (mut receive_map_sender, mut receive_map_receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.receiver_map.write().unwrap().insert(session_id.to_string().clone(), receive_map_receiver);
 
+        //init write from this stream
+        let (mut send_map_sender, mut send_map_receiver) = tokio::sync::mpsc::unbounded_channel();
+        self.sender_map.write().unwrap().insert(session_id.to_string().clone(), send_map_sender);
+
+        let circuit_events = self.circuit_events.clone();
         let session_id_clone = session_id.clone();
         tokio::spawn(async move {
+            let mut buf = [0u8; 65536];
             loop {
-                let data: Vec<u8> = receiver.recv().await.unwrap();
-                let mut buf = [0u8; 65536];
-                let mut payload = Vec::new();
-                payload.put_u32(data.len() as u32);
-                payload.extend_from_slice(data.as_slice());
-                let len = noise.write_message(payload.as_slice(), &mut buf).unwrap();
-                let buf_tmp = &buf[..len];
-                write_payload(&mut stream, buf_tmp, len, session_id_clone.as_str()).await;
+                tokio::select! {
+                            len = node::read_and_decrypt_payload(&mut stream, &mut noise, &mut buf) => {
+                            let real_size = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                            info!("real size:{},buf len:{}", real_size, len);
+                            let b2 = &buf[4..(real_size + 4)];
+                            println!("receive chatmessage:{}",String::from_utf8_lossy(b2));
+                            // receive_map_sender.send(Vec::from(b2));
+                        }
+                        Some(data) = send_map_receiver.recv() => {
+                            let mut buf = [0u8; 65536];
+                            let mut payload = Vec::new();
+                            payload.put_u32(data.len() as u32);
+                            payload.extend_from_slice(data.as_slice());
+                            let len = noise.write_message(payload.as_slice(), &mut buf).unwrap();
+                            let buf_tmp = &buf[..len];
+                            write_payload(&mut stream, buf_tmp, len, session_id_clone.as_str()).await;
+                        }
+                    }
             }
         });
+
+        //notify outbound circuit success
+        let mut guard = circuit_events.write().unwrap();
+        (*guard).push_back(session_id.clone());
+
         session_id
     }
 
@@ -289,6 +331,14 @@ impl SolanaClient for WhiteNoiseClient {
             sender.send(data.to_vec());
         }
     }
+
+    ////todo: read async
+    // async fn read_message(&self, session_id: &str) -> Option<Vec<u8>> {
+    //     let a = tokio::sync::RwLock::new().write()
+    //     let mut guard = self.receiver_map.read().unwrap();
+    //     let mut r = (*guard).get(session_id)?;
+    //     r.recv().await
+    // }
 
     fn get_whitenoise_id(&self) -> String {
         Account::from_keypair_to_whitenoise_id(&self.node.keypair)

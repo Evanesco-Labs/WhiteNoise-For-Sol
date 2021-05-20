@@ -123,7 +123,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 pub async fn answer(mut node: node::Node, nick_name: String) {
-    let mut stream = node.wait_for_relay_stream().await;
+    let mut stream = node.wait_for_inbound_relay_stream().await;
     info!("received relay steam");
     let relay = loop {
         let relay_inner = node::read_from_negotiated(&mut stream).await;
@@ -238,7 +238,7 @@ pub async fn caller(remote_whitenoise_id: String, mut node: node::Node, proxy_re
     let remote_peer_id = PeerId::from_public_key(identity::PublicKey::Secp256k1(remote_pub_key));
 
     node.new_relay_stream(proxy_remote_id).await;
-    let mut stream = node.wait_for_relay_stream().await;
+    let mut stream = node.wait_for_outbound_relay_stream().await;
     info!("received relay steam");
 
     node::write_relay_wake(&mut stream).await;
@@ -319,7 +319,6 @@ pub async fn caller(remote_whitenoise_id: String, mut node: node::Node, proxy_re
                 let b2 = &buf[4..(real_size+4)];
  
                 println!("receive chatmessage:{}",String::from_utf8_lossy(b2));
-
             }
         }
     }
