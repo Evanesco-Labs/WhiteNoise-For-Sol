@@ -63,7 +63,9 @@ pub struct WhitenoiseBehaviour {
     #[behaviour(ignore)]
     pub event_bus: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, oneshot::Sender<AckRequest>>>>,
     #[behaviour(ignore)]
-    pub relay_streams: std::sync::Arc<std::sync::RwLock<VecDeque<NegotiatedSubstream>>>,
+    pub inbound_relay_streams: std::sync::Arc<std::sync::RwLock<VecDeque<NegotiatedSubstream>>>,
+    #[behaviour(ignore)]
+    pub outbound_relay_streams: std::sync::Arc<std::sync::RwLock<VecDeque<NegotiatedSubstream>>>,
     #[behaviour(ignore)]
     pub proxy_request_channel: mpsc::UnboundedSender<NodeProxyRequest>,
 }
@@ -71,8 +73,12 @@ pub struct WhitenoiseBehaviour {
 impl NetworkBehaviourEventProcess<RelayEvent> for WhitenoiseBehaviour {
     fn inject_event(&mut self, message: RelayEvent) {
         match message {
-            RelayEvent::Relay(x) => {
-                let mut guard = self.relay_streams.write().unwrap();
+            RelayEvent::InboundRelay(x) => {
+                let mut guard = self.inbound_relay_streams.write().unwrap();
+                (*guard).push_back(x);
+            }
+            RelayEvent::OutboundRelay(x) => {
+                let mut guard = self.outbound_relay_streams.write().unwrap();
                 (*guard).push_back(x);
             }
             _ => {

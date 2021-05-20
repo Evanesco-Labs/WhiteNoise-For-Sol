@@ -62,7 +62,8 @@ pub struct Node {
     pub event_bus: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, oneshot::Sender<AckRequest>>>>,
     pub keypair: libp2p::identity::Keypair,
     pub proxy_id: Option<PeerId>,
-    pub relay_streams: std::sync::Arc<std::sync::RwLock<VecDeque<NegotiatedSubstream>>>,
+    pub inbound_relay_streams: std::sync::Arc<std::sync::RwLock<VecDeque<NegotiatedSubstream>>>,
+    pub outbound_relay_streams: std::sync::Arc<std::sync::RwLock<VecDeque<NegotiatedSubstream>>>,
     pub circuit_task: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, Vec<u8>>>>,
 }
 
@@ -168,9 +169,9 @@ impl Node {
         }
     }
 
-    pub async fn wait_for_relay_stream(&mut self) -> NegotiatedSubstream {
+    pub async fn wait_for_outbound_relay_stream(&mut self) -> NegotiatedSubstream {
         loop {
-            let mut guard = self.relay_streams.write().unwrap();
+            let mut guard = self.outbound_relay_streams.write().unwrap();
             let mut relay_stream_option = (*guard).pop_front();
             if relay_stream_option.is_some() {
                 return relay_stream_option.unwrap();
@@ -179,6 +180,20 @@ impl Node {
             }
         }
     }
+
+    pub async fn wait_for_inbound_relay_stream(&mut self) -> NegotiatedSubstream {
+        loop {
+            let mut guard = self.inbound_relay_streams.write().unwrap();
+            let mut relay_stream_option = (*guard).pop_front();
+            if relay_stream_option.is_some() {
+                return relay_stream_option.unwrap();
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+    }
+
+
     pub async fn new_relay_stream(&mut self, peer_id: PeerId) {
         let node_new_stream = NodeNewStream { peer_id: peer_id };
         let node_request = NodeRequest::NewStreamRequest(node_new_stream);
@@ -276,7 +291,9 @@ pub async fn start() -> Node {
 
     let event_bus = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
 
-    let relay_streams = std::sync::Arc::new(std::sync::RwLock::new(std::collections::VecDeque::new()));
+    let inbound_relay_streams = std::sync::Arc::new(std::sync::RwLock::new(std::collections::VecDeque::new()));
+
+    let outbound_relay_streams = std::sync::Arc::new(std::sync::RwLock::new(std::collections::VecDeque::new()));
 
     let (mut proxy_request_sender, mut proxy_request_receiver) = mpsc::unbounded_channel();
 
@@ -285,12 +302,21 @@ pub async fn start() -> Node {
         ack_behaviour: ack_behaviour,
         identify_behaviour: identify_behaviour,
         event_bus: event_bus.clone(),
-        relay_streams: relay_streams.clone(),
+        inbound_relay_streams: inbound_relay_streams.clone(),
+        outbound_relay_streams: outbound_relay_streams.clone(),
         relay_behaviour: relay_behaviour,
         proxy_request_channel: proxy_request_sender,
     };
 
-    let node = Node { node_request_sender: node_request_sender.clone(), event_bus: event_bus.clone(), keypair: id_keys, proxy_id: None, relay_streams: relay_streams, circuit_task: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())) };
+    let node = Node {
+        node_request_sender: node_request_sender.clone(),
+        event_bus: event_bus.clone(),
+        keypair: id_keys,
+        proxy_id: None,
+        inbound_relay_streams: inbound_relay_streams.clone(),
+        outbound_relay_streams: outbound_relay_streams.clone(),
+        circuit_task: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+    };
 
 
     let mut swarm1 = SwarmBuilder::new(trans, whitenoise_behaviour, peer_id)
