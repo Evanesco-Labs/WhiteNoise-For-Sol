@@ -33,7 +33,7 @@ pub trait SolanaClient {
     async fn dial(&mut self, remote_id: String) -> String;
     //Send message to a circuit of session_id.
     async fn send_message(&self, session_id: &str, data: &[u8]);
-
+    async fn read_message(&self, session_id: &str) -> Option<Vec<u8>>;
     fn get_whitenoise_id(&self) -> String;
 }
 
@@ -45,7 +45,7 @@ pub struct WhiteNoiseClient {
     bootstrap_peer_id: PeerId,
     pub circuit_events: std::sync::Arc<std::sync::RwLock<std::collections::VecDeque<String>>>,
     sender_map: std::sync::Arc<std::sync::RwLock<HashMap<String, UnboundedSender<Vec<u8>>>>>,
-    pub receiver_map: std::sync::Arc<std::sync::RwLock<HashMap<String, UnboundedReceiver<Vec<u8>>>>>,
+    pub receiver_map: std::sync::Arc<tokio::sync::Mutex<HashMap<String, UnboundedReceiver<Vec<u8>>>>>,
 }
 
 impl WhiteNoiseClient {
@@ -65,7 +65,7 @@ impl WhiteNoiseClient {
             bootstrap_peer_id,
             circuit_events: std::sync::Arc::new(std::sync::RwLock::new(std::collections::VecDeque::new())),
             sender_map: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
-            receiver_map: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
+            receiver_map: std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -164,7 +164,8 @@ impl SolanaClient for WhiteNoiseClient {
 
                 //init read from this stream
                 let (mut receive_map_sender, mut receive_map_receiver) = tokio::sync::mpsc::unbounded_channel();
-                receive_map.write().unwrap().insert(session_id.to_string().clone(), receive_map_receiver);
+                let mut guard = receive_map.lock().await;
+                (*guard).insert(session_id.to_string().clone(), receive_map_receiver);
 
                 //init write from this stream
                 let (mut send_map_sender, mut send_map_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -287,7 +288,8 @@ impl SolanaClient for WhiteNoiseClient {
 
         //init read from this stream
         let (mut receive_map_sender, mut receive_map_receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.receiver_map.write().unwrap().insert(session_id.to_string().clone(), receive_map_receiver);
+        let mut guard = self.receiver_map.lock().await;
+        (*guard).insert(session_id.to_string().clone(), receive_map_receiver);
 
         //init write from this stream
         let (mut send_map_sender, mut send_map_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -332,19 +334,16 @@ impl SolanaClient for WhiteNoiseClient {
         }
     }
 
-    ////todo: read async
-    // async fn read_message(&self, session_id: &str) -> Option<Vec<u8>> {
-    //     let a = tokio::sync::RwLock::new().write()
-    //     let mut guard = self.receiver_map.read().unwrap();
-    //     let mut r = (*guard).get(session_id)?;
-    //     r.recv().await
-    // }
+    async fn read_message(&self, session_id: &str) -> Option<Vec<u8>> {
+        let mut guard = self.receiver_map.lock().await;
+        let receiver = (*guard).get_mut(session_id)?;
+        receiver.recv().await
+    }
 
     fn get_whitenoise_id(&self) -> String {
         Account::from_keypair_to_whitenoise_id(&self.node.keypair)
     }
 }
-
 
 pub fn generate_session_id(remote_id: String, local_id: String) -> String {
     let now = std::time::SystemTime::now();
