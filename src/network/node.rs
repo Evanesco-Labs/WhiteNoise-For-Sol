@@ -46,6 +46,7 @@ use tokio::sync::mpsc::{UnboundedReceiver};
 use crate::account::account_service::Account;
 use std::collections::HashMap;
 use tokio::sync::mpsc::{UnboundedSender};
+use std::io::stderr;
 
 pub enum SessionRole {
     CallerRole = 1,
@@ -134,7 +135,7 @@ impl Node {
     }
 
 
-    pub async fn register_proxy(&mut self, remote_peer_id: PeerId) -> bool {
+    pub async fn register_proxy(&mut self, remote_peer_id: PeerId) -> std::io::Result<()> {
         let new_proxy = request_proto::NewProxy {
             time: String::from("60m"),
             white_noise_id: Account::from_keypair_to_whitenoise_id(&self.keypair),
@@ -159,13 +160,16 @@ impl Node {
             remote_peer_id: remote_peer_id.clone(),
             proxy_request: Some(proxy_request),
         };
-        let AckRequest(data) = external_send_node_request_and_wait(self.event_bus.clone(), self.node_request_sender.clone(), key, NodeRequest::ProxyRequest(node_proxy_request)).await;
-        info!("finished register proxy this turn:{}", data.command_id);
-        if data.result {
+        let AckRequest(ack) = external_send_node_request_and_wait(self.event_bus.clone(), self.node_request_sender.clone(), key, NodeRequest::ProxyRequest(node_proxy_request)).await;
+        info!("finished register proxy this turn:{}", ack.command_id);
+        if ack.result {
             self.proxy_id = Some(remote_peer_id);
-            return true;
+            return Ok(());
         } else {
-            return false;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                std::str::from_utf8(ack.data.as_slice()).unwrap_or("register proxy failed"),
+            ));
         }
     }
 
