@@ -37,7 +37,7 @@ use whitenoise_solana::sdk::client::SolanaClient;
 
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     let env = env_logger::Env::new().filter_or("MY_LOG", "debug");
     env_logger::init_from_env(env);
 
@@ -53,11 +53,7 @@ async fn main() {
     let index = rng.gen_range(0..peers.len());
     let proxy_peer_id = peers.get(index).unwrap();
 
-    let ok = client.register(proxy_peer_id.clone()).await;
-    info!("register proxy: {}", ok);
-    if !ok {
-        return;
-    }
+    client.register(proxy_peer_id.clone()).await?;
 
     let session_id = client.dial(remote_id.to_string()).await;
     info!("finish dialing session id: {}", session_id);
@@ -75,6 +71,8 @@ async fn main() {
         }
         }
     }
+
+    Ok(())
 }
 
 

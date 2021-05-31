@@ -22,13 +22,14 @@ use multihash::MultihashDigest;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::network::whitenoise_behaviour::{NodeAckRequest, NodeRequest};
 use prost::Message;
+use std::error::Error;
 
 #[async_trait]
 pub trait SolanaClient {
     //Get nodes of the relay network
     async fn get_main_net_peers(&mut self, cnt: i32) -> Vec<PeerId>;
     //Register to a proxy node and start handle inbound circuits
-    async fn register(&mut self, peer_id: PeerId) -> bool;
+    async fn register(&mut self, peer_id: PeerId) -> io::Result<()>;
     //Dial a another client with whitenoise_id and build a secure circuit. Returns the session_id of this circuit.
     async fn dial(&mut self, remote_id: String) -> String;
     //Send message to a circuit of session_id.
@@ -81,11 +82,8 @@ impl SolanaClient for WhiteNoiseClient {
         return peer_id_vec;
     }
 
-    async fn register(&mut self, peer_id: PeerId) -> bool {
-        let ok = self.node.register_proxy(peer_id).await;
-        if !ok {
-            return false;
-        }
+    async fn register(&mut self, peer_id: PeerId) -> io::Result<()> {
+        self.node.register_proxy(peer_id).await?;
         let mut node = self.node.clone();
         let receive_map = self.receiver_map.clone();
         let send_map = self.sender_map.clone();
@@ -200,7 +198,7 @@ impl SolanaClient for WhiteNoiseClient {
                 (*guard).push_back(session_id.to_string().clone());
             }
         });
-        ok
+        Ok(())
     }
 
     async fn dial(&mut self, remote_id: String) -> String {
